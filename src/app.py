@@ -1,3 +1,4 @@
+import tkinter as tk
 from tkinter import Listbox, Canvas, Tk, END
 from tkinter import LEFT, TOP, BOTTOM, W, X, Y, NW, BOTH, HORIZONTAL, SUNKEN
 from tkinter.ttk import Entry, Button, Frame, Label, Progressbar 
@@ -10,31 +11,24 @@ from helpers import get_img_urls, get_img_data
 from aiohttp import ClientSession
 
 import asyncio
-import threading
 
-# RxPY imports
 from rx.subject import Subject
 from rx import operators as ops
 from rx.scheduler.mainloop import TkinterScheduler
 
-class App:
+class App():
 
     def __init__(self, root):
         self.root = root
-        self.root.title("URL Processor App")
-        self.root.geometry("800x600")
+        self.root.title("Practice 2")
+        self.root.geometry("1200x800")
 
         self.urls_data = {}
 
-        # Setup RxPY Tkinter Scheduler and Subject
         self.scheduler = TkinterScheduler(self.root)
         self.image_subject = Subject()
-
-        # Subscribe to the subject with an Observer, applying pipes
         self.image_subject.pipe(
-            # Switch back to the main GUI thread to perform updates safely
             ops.observe_on(self.scheduler),
-            # Example pipe: skip empty data
             ops.filter(lambda item: item['data'] is not None)
         ).subscribe(
             on_next=self.on_image_downloaded,
@@ -51,7 +45,6 @@ class App:
         self.url_entry = Entry(top_frame)
         self.url_entry.pack(side=LEFT, fill=X, expand=True, padx=(0, 5))
 
-        # Notice this is a normal function now, since Tkinter doesn't run async callbacks natively
         self.process_btn = Button(top_frame, text="Process", command=self.on_process)
         self.process_btn.pack(side=LEFT)
 
@@ -73,20 +66,14 @@ class App:
         left_panel = Frame(middle_frame, relief=SUNKEN, width=200)
         left_panel.pack(side=LEFT, fill=Y, padx=(0, 10))
 
-        left_panel.pack_propagate(False)
-
-        Label(left_panel, text="Items").pack(pady=(5, 0))
-
         self.listbox = Listbox(left_panel)
         self.listbox.pack(fill=BOTH, expand=True, padx=5, pady=5)
-        # Bind clicking an item in the listbox to render the corresponding image
         self.listbox.bind('<<ListboxSelect>>', self.on_listbox_select)
         
         # Main Area (Image Rendering)
         main_area = Frame(middle_frame, relief=SUNKEN)
         main_area.pack(side=LEFT, fill=BOTH, expand=True)
 
-        Label(main_area, text="Image Viewport").pack(pady=(5, 0))
         self.image_canvas = Canvas(main_area, bg="gray")
         self.image_canvas.pack(fill=BOTH, expand=True, padx=5, pady=5)
 
@@ -100,73 +87,58 @@ class App:
         self.urls_data.clear()
         self.progress['value'] = 0
 
-        # Run the asyncio operations in a background thread to keep Tkinter responsive
-        threading.Thread(target=self.start_async_download, args=(url,), daemon=True).start()
+        asyncio.create_task(self.download_images_task(url))
 
-    def start_async_download(self, url):
-        # Create a new event loop for this thread
-        asyncio.run(self.download_images_task(url))
 
     async def download_images_task(self, base_url):
         try:
             async with ClientSession() as sesh:
-                raw_urls = await get_img_urls(sesh, base_url)
+                images_to_process = await get_img_urls(sesh, base_url)
                 
-                # Clean up URLs (resolve relative urls like //upload.wikimedia...)
-                urls = [urljoin(base_url, u) for u in raw_urls if u]
-                
-                # Filter out SVGs as Pillow does not natively support them
-                urls = [u for u in urls if not u.lower().endswith('.svg')]
-                
-                if not urls:
+                if not images_to_process:
                     self.image_subject.on_completed()
                     return
 
-                # Calculate progress step per image
-                self.progress_step = 100.0 / len(urls)
+                self.status_label.config(text=f"{len(images_to_process)} images found")
+                self.progress_step = 100.0 / len(images_to_process)
 
-                # Fetch all images concurrently. 
-                # As each finishes, it pushes data to the RxPY subject.
-                tasks = [self.fetch_and_notify(sesh, u) for u in urls]
+                tasks = [self.fetch_and_notify(sesh, img) for img in images_to_process]
                 await asyncio.gather(*tasks)
 
                 self.image_subject.on_completed()
-        except Exception as e:
-            self.image_subject.on_error(e)
+        except Exception as e: self.image_subject.on_error(e)
 
-    async def fetch_and_notify(self, sesh, img_url):
+
+    async def fetch_and_notify(self, sesh, img_info):
         try:
-            data = await get_img_data(sesh, img_url)
-            # Emit an event for each successful download
+            data = await get_img_data(sesh, img_info['url'])
             self.image_subject.on_next({
-                'url': img_url,
+                # 'url': img_info['url'],
+                'name': img_info['name'],
                 'data': data
             })
         except Exception as e:
-            print(f"Failed to fetch {img_url}: {e}")
+            print(f"Failed to fetch {img_info['url']}: {e}")
 
-    # --- Observer Callbacks (These run safely on the Tkinter Main Thread) ---
 
     def on_image_downloaded(self, item):
-        img_url = item['url']
+        # img_url = item['url']
+        img_name = item['name']
         img_data = item['data']
         
-        # Save data and update UI
-        self.urls_data[img_url] = img_data
+        # Save data using the name as the key so we can retrieve it when clicked
+        self.urls_data[img_name] = img_data
         
-        # Add to left menu
-        self.listbox.insert(END, img_url)
+        # Add the extracted NAME to the left menu, not the URL
+        self.listbox.insert(END, img_name)
         
         # Update progress bar
         self.progress['value'] += self.progress_step
-        
-        self.status_label.config(text=f"Status: Downloaded {len(self.urls_data)} images...")
 
     def on_download_error(self, error):
         self.status_label.config(text=f"Status: Error - {error}")
 
     def on_download_complete(self):
-        self.status_label.config(text="Status: All downloads completed.")
         self.progress['value'] = 100
 
     def on_listbox_select(self, event):
@@ -174,8 +146,8 @@ class App:
         selection = self.listbox.curselection()
         if selection:
             index = selection[0]
-            url = self.listbox.get(index)
-            data = self.urls_data.get(url)
+            name = self.listbox.get(index)
+            data = self.urls_data.get(name)
             if data:
                 self.render_img(data)
 
@@ -193,7 +165,20 @@ class App:
         except Exception as e:
             print(f"Error rendering image: {e}")
 
-if __name__ == "__main__":
+
+async def gui_loop(root):
+    while True:
+        try:
+            root.update()
+            await asyncio.sleep(0.01)
+        except tk.TclError: break
+
+
+async def main():
     root = Tk()
     app = App(root)
-    root.mainloop()
+    await gui_loop(root)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
