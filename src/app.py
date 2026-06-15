@@ -113,7 +113,6 @@ class App():
         try:
             data = await get_img_data(sesh, img_info['url'])
             self.image_subject.on_next({
-                # 'url': img_info['url'],
                 'name': img_info['name'],
                 'data': data
             })
@@ -122,7 +121,6 @@ class App():
 
 
     def on_image_downloaded(self, item):
-        # img_url = item['url']
         img_name = item['name']
         img_data = item['data']
         
